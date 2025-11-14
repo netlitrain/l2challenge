@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -e
+
+##############################################
+#   CTF SETUP SCRIPT FOR CENTOS MINIMAL
+##############################################
+
+echo "[*] Updating system..."
+yum update -y
+
+echo "[*] Installing core tools..."
+yum install -y epel-release
+yum install -y httpd php php-mysqlnd mariadb-server mariadb \
+               docker docker-compose git gcc make vim unzip curl policycoreutils-python-utils
+
+systemctl enable --now httpd
+systemctl enable --now mariadb
+systemctl enable --now docker
+
+##############################################
+# Disable/Configure SELinux for CTF
+##############################################
+setenforce 0 || true
+sed -i 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config
+
+##############################################
+# Create directories
+##############################################
+BASE=/opt/ctf
+mkdir -p $BASE/{crypto,stego,web,privesc,root,lateral}
+
+##############################################
+# Create weak user for privilege escalation
+##############################################
+useradd -m ctfplayer -s /bin/bash || true
+echo "ctfplayer:weakpass123" | chpasswd
+
+##############################################
+# 1. CRYPTO (Easy)
+##############################################
+mkdir -p $BASE/crypto/easy
+echo "U2FsdGVkX1+uCRYPTO_CAESAR_SHIFT_13_FLAG_u==" > $BASE/crypto/easy/encrypted_message.txt
+echo "FLAG{CRYPTO_SIMPLE_123}" > $BASE/crypto/easy/flag.txt
+
+##############################################
+# 2. SQLi Challenge (Easy/Medium)
+##############################################
+mkdir -p /var/www/html/sql-challenge
+
+cat << 'EOF' > /var/www/html/sql-challenge/index.php
+<?php
+$conn = mysqli_connect("localhost", "root", "", "ctfweb");
+$user = $_GET['user'] ?? '';
+$query = "SELECT secret FROM users WHERE username = '$user'";
+$result = mysqli_query($conn, $query);
+echo "<h2>Login Lookup</h2>";
+echo "Query: $query<br>";
+if ($row = mysqli_fetch_assoc($result)) {
+    echo "Secret: " . $row['secret'];
+} else {
+    echo "No user found!";
+}
+?>
+EOF
+
+mysql -u root <<EOF
+CREATE DATABASE IF NOT EXISTS ctfweb;
+USE ctfweb;
+CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(50), secret VARCHAR(100));
+INSERT INTO users (username, secret) VALUES ("admin", "FLAG{SQL_INJECTION_456}");
+EOF
+
+##############################################
+# 3. XSS Challenge (Easy)
+##############################################
+mkdir -p /var/www/html/xss-challenge
+
+cat << 'EOF' > /var/www/html/xss-challenge/index.php
+<html>
+<body>
+<h2>XSS Comment Box</h2>
+<form>
+<input type="text" name="msg">
+<input type="submit">
+</form>
+<p>Your message:</p>
+<?= $_GET["msg"] ?? "" ?>
+</body>
+</html>
+EOF
+
+echo "FLAG{XSS_789}" > $BASE/web/xss_flag.txt
+
+##############################################
+# 4. MEDIUM CRYPTO — Substitution Cipher
+##############################################
+mkdir -p $BASE/crypto/medium
+
+cat << 'EOF' > $BASE/crypto/medium/cipher.txt
+Encrypted:
+FUR QBRF GUR PNFG PNFGVAT?
+
+Hint: It's a substitution cipher / frequency analysis.
+EOF
+
+echo "FLAG{CRYPTO_MEDIUM_777}" > $BASE/crypto/medium/flag.txt
+
+##############################################
+# 5. MEDIUM STEGO (Instructor Replace Image)
+##############################################
+mkdir -p $BASE/stego/medium
+echo "Replace image.jpg with real stego image hiding flag." > $BASE/stego/medium/README.txt
+echo "FLAG{STEGO_MEDIUM_888}" > $BASE/stego/medium/hidden_flag.txt
+
+##############################################
+# 6. LATERAL MOVEMENT — Weak User Hash
+##############################################
+useradd -m analyst -s /bin/bash || true
+echo "analyst:password" | chpasswd
+echo "FLAG{WEAK_HASH_555}" > /home/analyst/flag.txt
+chmod 600 /home/analyst/flag.txt
+
+##############################################
+# 7. PrivEsc — File Capability Exploit
+##############################################
+mkdir -p $BASE/privesc/cap
+
+cat << 'EOF' > $BASE/privesc/cap/debug
+#!/bin/bash
+echo "Debug tool running..."
+cat /opt/ctf/privesc/cap/flag.txt
+EOF
+
+chmod +x $BASE/privesc/cap/debug
+setcap cap_setuid+ep $BASE/privesc/cap/debug || true
+
+echo "FLAG{CAPABILITY_666}" > $BASE/privesc/cap/flag.txt
+
+##############################################
+# 8. PrivEsc — SUID Root Shell Simulation
+##############################################
+cat << 'EOF' > /opt/ctf/privesc/suid_prog.c
+#include <stdio.h>
+#include <stdlib.h>
+int main() {
+    setuid(0);
+    system("/bin/bash");
+    return 0;
+}
+EOF
+
+gcc /opt/ctf/privesc/suid_prog.c -o /opt/ctf/privesc/suid_prog || true
+chmod 4755 /opt/ctf/privesc/suid_prog
+
+echo "FLAG{SUID_MEDIUM_444}" > /opt/ctf/privesc/suid_flag.txt
+
+##############################################
+# 9. Final Root Flag (Boot-to-Root)
+##############################################
+echo "FLAG{ROOT_MEDIUM_FINAL_000}" > /root/root_flag2.txt
+chmod 600 /root/root_flag2.txt
+
+##############################################
+# Restart services
+##############################################
+systemctl restart httpd
+systemctl restart docker
+
+echo "============================================"
+echo "   CTF SETUP COMPLETE ON CENTOS MINIMAL!"
+echo "============================================"
+echo " Web Challenges:"
+echo "  - SQLi: http://<VM-IP>/sql-challenge"
+echo "  - XSS:  http://<VM-IP>/xss-challenge"
+echo ""
+echo " Users for privilege escalation:"
+echo "   ctfplayer / weakpass123"
+echo "   analyst   / password"
+echo ""
+echo " Flags located in /opt/ctf/"
+echo " Final root flag: /root/root_flag2.txt"
+echo "============================================"
